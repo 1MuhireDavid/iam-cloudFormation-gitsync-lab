@@ -6,6 +6,7 @@ resources for the lab, deployed via CloudFormation's **Git Sync** feature
 
 ## Repo contents
 
+
 | File | Purpose |
 |---|---|
 | `template.yaml` | The CloudFormation template — Secrets Manager secret, IAM groups/policies, IAM users, and a custom resource that sets each user's console login profile. |
