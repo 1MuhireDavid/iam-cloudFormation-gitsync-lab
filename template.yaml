@@ -16,6 +16,8 @@ Parameters:
     Description: Name for the Secrets Manager secret holding the shared temporary password.
 
 Resources:
+
+
   OneTimePasswordSecret:
     Type: AWS::SecretsManager::Secret
     Properties:
@@ -81,16 +83,20 @@ Resources:
         Password: !Sub '{{resolve:secretsmanager:${OneTimePasswordSecret}}}'
         PasswordResetRequired: true
       Policies:
+        # Required so the user can actually complete the forced password
+        # reset on first login - PasswordResetRequired alone only prompts
+        # for the change, it doesn't grant permission to perform it.
         - PolicyName: AllowSelfPasswordChange
-                  PolicyDocument:
-                    Version: '2012-10-17'
-                    Statement:
-                      - Sid: ChangeOwnPassword
-                        Effect: Allow
-                        Action:
-                          - iam:ChangePassword
-                          - iam:GetLoginProfile
-                        Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:user/${aws:username}'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ChangeOwnPassword
+                Effect: Allow
+                Action:
+                  - iam:ChangePassword
+                  - iam:GetLoginProfile
+                Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:user/${aws:username}'
+
   EC2User2:
     Type: AWS::IAM::User
     Properties:
@@ -111,6 +117,9 @@ Resources:
                 Action:
                   - ec2:RunInstances
                 Resource: '*'
+        # Required so the user can actually complete the forced password
+        # reset on first login - PasswordResetRequired alone only prompts
+        # for the change, it doesn't grant permission to perform it.
         - PolicyName: AllowSelfPasswordChange
           PolicyDocument:
             Version: '2012-10-17'
@@ -121,6 +130,7 @@ Resources:
                   - iam:ChangePassword
                   - iam:GetLoginProfile
                 Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:user/${aws:username}'
+
   S3User:
     Type: AWS::IAM::User
     Properties:
@@ -131,16 +141,20 @@ Resources:
         Password: !Sub '{{resolve:secretsmanager:${OneTimePasswordSecret}}}'
         PasswordResetRequired: true
       Policies:
-      - PolicyName: AllowSelfPasswordChange
-        PolicyDocument:
-          Version: '2012-10-17'
-          Statement:
-            - Sid: ChangeOwnPassword
-              Effect: Allow
-              Action:
-                - iam:ChangePassword
-                - iam:GetLoginProfile
-              Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:user/${aws:username}'
+        # Required so the user can actually complete the forced password
+        # reset on first login - PasswordResetRequired alone only prompts
+        # for the change, it doesn't grant permission to perform it.
+        - PolicyName: AllowSelfPasswordChange
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ChangeOwnPassword
+                Effect: Allow
+                Action:
+                  - iam:ChangePassword
+                  - iam:GetLoginProfile
+                Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:user/${aws:username}'
+
 Outputs:
   SecretArn:
     Description: ARN of the shared one-time password secret. Retrieve the value from Secrets Manager to log in.
