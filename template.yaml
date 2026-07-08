@@ -17,6 +17,9 @@ Parameters:
 
 Resources:
 
+  ############################################################
+  # 1. One-time password, auto-generated, stored in Secrets Manager
+  ############################################################
   OneTimePasswordSecret:
     Type: AWS::SecretsManager::Secret
     Properties:
@@ -28,6 +31,9 @@ Resources:
         ExcludePunctuation: false
         RequireEachIncludedType: true
 
+  ############################################################
+  # 2. IAM Groups and permissions
+  ############################################################
   S3ReadGroup:
     Type: AWS::IAM::Group
     Properties:
@@ -72,6 +78,10 @@ Resources:
                   - ec2:CreateTags
                 Resource: '*'
 
+  ############################################################
+  # 3. IAM Users - password set natively via LoginProfile,
+  #    pulled from Secrets Manager with a dynamic reference.
+  ############################################################
   EC2User1:
     Type: AWS::IAM::User
     Properties:
@@ -140,6 +150,9 @@ Resources:
         Password: !Sub '{{resolve:secretsmanager:${OneTimePasswordSecret}}}'
         PasswordResetRequired: true
       Policies:
+        # Required so the user can actually complete the forced password
+        # reset on first login - PasswordResetRequired alone only prompts
+        # for the change, it doesn't grant permission to perform it.
         - PolicyName: AllowSelfPasswordChange
           PolicyDocument:
             Version: '2012-10-17'
