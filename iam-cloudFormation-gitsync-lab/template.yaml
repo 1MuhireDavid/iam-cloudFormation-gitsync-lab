@@ -4,9 +4,10 @@ Description: >
   Creates a one-time password in Secrets Manager, an S3 read-only group,
   an EC2 group, and three IAM console users (ec2-user1, ec2-user2, s3-user).
   ec2-user2 carries an explicit Deny on ec2:RunInstances despite EC2 Group
-  membership. A custom resource (Lambda-backed) sets each user's console
-  login profile from the generated secret and forces a password reset on
-  first login, since AWS::IAM::User has no native LoginProfile property.
+  membership. Each user's console login password is set directly via the
+  native AWS::IAM::User LoginProfile property, resolved at deploy time from
+  Secrets Manager using a CloudFormation dynamic reference. No custom
+  resource, Lambda function, or IAM role is required.
 
 Parameters:
   SecretName:
@@ -71,12 +72,33 @@ Resources:
                   - ec2:CreateTags
                 Resource: '*'
 
+  ############################################################
+  # 3. IAM Users - password set natively via LoginProfile,
+  #    pulled from Secrets Manager with a dynamic reference.
+  ############################################################
   EC2User1:
     Type: AWS::IAM::User
     Properties:
       UserName: ec2-user1
       Groups:
         - !Ref EC2Group
+      LoginProfile:
+        Password: !Sub '{{resolve:secretsmanager:${OneTimePasswordSecret}}}'
+        PasswordResetRequired: true
+      Policies:
+        # Required so the user can actually complete the forced password
+        # reset on first login - PasswordResetRequired alone only prompts
+        # for the change, it doesn't grant permission to perform it.
+        - PolicyName: AllowSelfPasswordChange
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ChangeOwnPassword
+                Effect: Allow
+                Action:
+                  - iam:ChangePassword
+                  - iam:GetLoginProfile
+                Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:user/${!aws:username}'
 
   EC2User2:
     Type: AWS::IAM::User
@@ -84,6 +106,9 @@ Resources:
       UserName: ec2-user2
       Groups:
         - !Ref EC2Group
+      LoginProfile:
+        Password: !Sub '{{resolve:secretsmanager:${OneTimePasswordSecret}}}'
+        PasswordResetRequired: true
       Policies:
         # Explicit deny overrides the RunInstances Allow inherited from EC2Group.
         - PolicyName: Deny-EC2-RunInstances
@@ -95,6 +120,19 @@ Resources:
                 Action:
                   - ec2:RunInstances
                 Resource: '*'
+        # Required so the user can actually complete the forced password
+        # reset on first login - PasswordResetRequired alone only prompts
+        # for the change, it doesn't grant permission to perform it.
+        - PolicyName: AllowSelfPasswordChange
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ChangeOwnPassword
+                Effect: Allow
+                Action:
+                  - iam:ChangePassword
+                  - iam:GetLoginProfile
+                Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:user/${!aws:username}'
 
   S3User:
     Type: AWS::IAM::User
@@ -102,111 +140,23 @@ Resources:
       UserName: s3-user
       Groups:
         - !Ref S3ReadGroup
-
-  ############################################################
-  # 4. Custom resource support: set console login profile
-  #    (AWS::IAM::User has no LoginProfile property in CFN)
-  ############################################################
-  LoginProfileFunctionRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
-            Action: sts:AssumeRole
+      LoginProfile:
+        Password: !Sub '{{resolve:secretsmanager:${OneTimePasswordSecret}}}'
+        PasswordResetRequired: true
       Policies:
-        - PolicyName: LoginProfileManagement
+        # Required so the user can actually complete the forced password
+        # reset on first login - PasswordResetRequired alone only prompts
+        # for the change, it doesn't grant permission to perform it.
+        - PolicyName: AllowSelfPasswordChange
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
-              - Effect: Allow
+              - Sid: ChangeOwnPassword
+                Effect: Allow
                 Action:
-                  - iam:CreateLoginProfile
-                  - iam:UpdateLoginProfile
-                  - iam:DeleteLoginProfile
+                  - iam:ChangePassword
                   - iam:GetLoginProfile
-                Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:user/*'
-              - Effect: Allow
-                Action:
-                  - secretsmanager:GetSecretValue
-                Resource: !Ref OneTimePasswordSecret
-              - Effect: Allow
-                Action:
-                  - logs:CreateLogGroup
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-                Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*'
-
-  LoginProfileFunction:
-    Type: AWS::Lambda::Function
-    Properties:
-      FunctionName: iam-lab-set-login-profile
-      Runtime: python3.12
-      Handler: index.handler
-      Timeout: 30
-      Role: !GetAtt LoginProfileFunctionRole.Arn
-      Code:
-        ZipFile: |
-          import boto3
-          import cfnresponse
-
-          def handler(event, context):
-              props = event.get('ResourceProperties', {})
-              username = props.get('UserName')
-              secret_arn = props.get('SecretArn')
-              physical_id = event.get('PhysicalResourceId') or f"login-profile-{username}"
-              try:
-                  iam = boto3.client('iam')
-                  if event['RequestType'] in ('Create', 'Update'):
-                      sm = boto3.client('secretsmanager')
-                      password = sm.get_secret_value(SecretId=secret_arn)['SecretString']
-                      try:
-                          iam.create_login_profile(
-                              UserName=username,
-                              Password=password,
-                              PasswordResetRequired=True
-                          )
-                      except iam.exceptions.EntityAlreadyExistsException:
-                          iam.update_login_profile(
-                              UserName=username,
-                              Password=password,
-                              PasswordResetRequired=True
-                          )
-                  elif event['RequestType'] == 'Delete':
-                      try:
-                          iam.delete_login_profile(UserName=username)
-                      except iam.exceptions.NoSuchEntityException:
-                          pass
-                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {}, physical_id)
-              except Exception as e:
-                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)}, physical_id)
-
-  EC2User1LoginProfile:
-    Type: Custom::LoginProfile
-    DependsOn: EC2User1
-    Properties:
-      ServiceToken: !GetAtt LoginProfileFunction.Arn
-      UserName: !Ref EC2User1
-      SecretArn: !Ref OneTimePasswordSecret
-
-  EC2User2LoginProfile:
-    Type: Custom::LoginProfile
-    DependsOn: EC2User2
-    Properties:
-      ServiceToken: !GetAtt LoginProfileFunction.Arn
-      UserName: !Ref EC2User2
-      SecretArn: !Ref OneTimePasswordSecret
-
-  S3UserLoginProfile:
-    Type: Custom::LoginProfile
-    DependsOn: S3User
-    Properties:
-      ServiceToken: !GetAtt LoginProfileFunction.Arn
-      UserName: !Ref S3User
-      SecretArn: !Ref OneTimePasswordSecret
+                Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:user/${!aws:username}'
 
 Outputs:
   SecretArn:

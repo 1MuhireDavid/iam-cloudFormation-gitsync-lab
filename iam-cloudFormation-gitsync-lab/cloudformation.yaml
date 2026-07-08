@@ -1,17 +1,3 @@
-# CloudFormation Git Sync deployment file
-# Reference: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/git-sync-deployment-file.html
-#
-# This file tells CloudFormation which template to deploy, under what stack
-# name, and with which capabilities, whenever a commit lands on the tracked
-# branch of this repo.
-
-version: 0.1
-
-stacks:
-  iam-gitsync-lab-stack:
-    template: template.yaml
-    region: us-east-1          # change to your target region
-    capabilities:
-      - CAPABILITY_NAMED_IAM   # required: stack creates IAM users/groups/roles with custom names
-    parameters:
-      SecretName: iam-lab/one-time-password
+template-file-path: template.yaml
+parameters: {}
+tags: {}
