@@ -17,7 +17,6 @@ Parameters:
 
 Resources:
 
-
   OneTimePasswordSecret:
     Type: AWS::SecretsManager::Secret
     Properties:
@@ -95,7 +94,7 @@ Resources:
                 Action:
                   - iam:ChangePassword
                   - iam:GetLoginProfile
-                Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:user/${aws:username}'
+                Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:user/$${aws:username}'
 
   EC2User2:
     Type: AWS::IAM::User
@@ -129,7 +128,7 @@ Resources:
                 Action:
                   - iam:ChangePassword
                   - iam:GetLoginProfile
-                Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:user/${aws:username}'
+                Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:user/$${aws:username}'
 
   S3User:
     Type: AWS::IAM::User
@@ -141,9 +140,6 @@ Resources:
         Password: !Sub '{{resolve:secretsmanager:${OneTimePasswordSecret}}}'
         PasswordResetRequired: true
       Policies:
-        # Required so the user can actually complete the forced password
-        # reset on first login - PasswordResetRequired alone only prompts
-        # for the change, it doesn't grant permission to perform it.
         - PolicyName: AllowSelfPasswordChange
           PolicyDocument:
             Version: '2012-10-17'
@@ -153,7 +149,7 @@ Resources:
                 Action:
                   - iam:ChangePassword
                   - iam:GetLoginProfile
-                Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:user/${aws:username}'
+                Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:user/$${aws:username}'
 
 Outputs:
   SecretArn:
