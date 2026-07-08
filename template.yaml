@@ -104,7 +104,7 @@ Resources:
                 Action:
                   - iam:ChangePassword
                   - iam:GetLoginProfile
-                Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:user/$${aws:username}'
+                Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:user/${!aws:username}'
 
   EC2User2:
     Type: AWS::IAM::User
@@ -138,7 +138,7 @@ Resources:
                 Action:
                   - iam:ChangePassword
                   - iam:GetLoginProfile
-                Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:user/$${aws:username}'
+                Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:user/${!aws:username}'
 
   S3User:
     Type: AWS::IAM::User
@@ -162,7 +162,7 @@ Resources:
                 Action:
                   - iam:ChangePassword
                   - iam:GetLoginProfile
-                Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:user/$${aws:username}'
+                Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:user/${!aws:username}'
 
 Outputs:
   SecretArn:
