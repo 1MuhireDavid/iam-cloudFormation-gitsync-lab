@@ -134,29 +134,29 @@ Resources:
                   - iam:GetLoginProfile
                 Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:user/${!aws:username}'
 
-  S3User:
-    Type: AWS::IAM::User
-    Properties:
-      UserName: s3-user
-      Groups:
-        - !Ref S3ReadGroup
-      LoginProfile:
-        Password: !Sub '{{resolve:secretsmanager:${OneTimePasswordSecret}}}'
-        PasswordResetRequired: true
-      Policies:
-        # Required so the user can actually complete the forced password
-        # reset on first login - PasswordResetRequired alone only prompts
-        # for the change, it doesn't grant permission to perform it.
-        - PolicyName: AllowSelfPasswordChange
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Sid: ChangeOwnPassword
-                Effect: Allow
-                Action:
-                  - iam:ChangePassword
-                  - iam:GetLoginProfile
-                Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:user/${!aws:username}'
+  # S3User:
+  #   Type: AWS::IAM::User
+  #   Properties:
+  #     UserName: s3-user
+  #     Groups:
+  #       - !Ref S3ReadGroup
+  #     LoginProfile:
+  #       Password: !Sub '{{resolve:secretsmanager:${OneTimePasswordSecret}}}'
+  #       PasswordResetRequired: true
+  #     Policies:
+  #       # Required so the user can actually complete the forced password
+  #       # reset on first login - PasswordResetRequired alone only prompts
+  #       # for the change, it doesn't grant permission to perform it.
+  #       - PolicyName: AllowSelfPasswordChange
+  #         PolicyDocument:
+  #           Version: '2012-10-17'
+  #           Statement:
+  #             - Sid: ChangeOwnPassword
+  #               Effect: Allow
+  #               Action:
+  #                 - iam:ChangePassword
+  #                 - iam:GetLoginProfile
+  #               Resource: !Sub 'arn:aws:iam::${AWS::AccountId}:user/${!aws:username}'
 
 Outputs:
   SecretArn:
@@ -171,5 +171,5 @@ Outputs:
     Value: !Ref EC2User1
   EC2User2Name:
     Value: !Ref EC2User2
-  S3UserName:
-    Value: !Ref S3User
+  # S3UserName:
+  #   Value: !Ref S3User~
