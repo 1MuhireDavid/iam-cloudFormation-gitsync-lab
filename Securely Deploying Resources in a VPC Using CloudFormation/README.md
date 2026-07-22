@@ -12,6 +12,7 @@ SSH, no key pairs).
 | `README.md` | This file: architecture, deployment steps, validation steps, design notes |
 
 ## Architecture at a glance
+<img width="2720" height="2080" alt="ha_vpc_architecture" src="https://github.com/user-attachments/assets/c1610180-ef5f-4a3a-bfdd-458459e20290" />
 
 
 Key design points:
