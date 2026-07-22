@@ -1,0 +1,466 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Highly available, secure, multi-AZ VPC with public/private subnets, AZ-scoped
+  NAT Gateways, a public Apache web tier, a private application tier, and
+  SSM-only EC2 management (no SSH, no key pairs).
+
+# ---------------------------------------------------------------------------
+# PARAMETERS
+# ---------------------------------------------------------------------------
+Parameters:
+  FullName:
+    Type: String
+    Description: Your full name, shown on the public web pages.
+    Default: "Your Full Name"
+
+  LabName:
+    Type: String
+    Description: Lab name, shown on the public web pages.
+    Default: "Securely Deploying Resources in a VPC Using CloudFormation"
+
+  VpcCidr:
+    Type: String
+    Default: 10.0.0.0/16
+
+  PublicSubnetACidr:
+    Type: String
+    Default: 10.0.0.0/24
+
+  PublicSubnetBCidr:
+    Type: String
+    Default: 10.0.1.0/24
+
+  PrivateSubnetACidr:
+    Type: String
+    Default: 10.0.10.0/24
+
+  PrivateSubnetBCidr:
+    Type: String
+    Default: 10.0.11.0/24
+
+  InstanceType:
+    Type: String
+    Default: t3.micro
+    AllowedValues: [t3.micro, t3.small, t3.medium]
+
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+    Description: Amazon Linux 2023 AMI, resolved automatically via public SSM parameter.
+
+Resources:
+  # -------------------------------------------------------------------------
+  # VPC + INTERNET GATEWAY
+  # -------------------------------------------------------------------------
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-vpc"
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-igw"
+
+  IGWAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  # -------------------------------------------------------------------------
+  # SUBNETS  (2 public / 2 private, one pair per AZ)
+  # -------------------------------------------------------------------------
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PublicSubnetACidr
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-public-a"
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PublicSubnetBCidr
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-public-b"
+
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PrivateSubnetACidr
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-private-a"
+
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: !Ref PrivateSubnetBCidr
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-private-b"
+
+  # -------------------------------------------------------------------------
+  # NAT GATEWAYS - one per AZ, each with its own EIP, each in its own
+  # public subnet. This gives AZ-local egress with no cross-AZ dependency.
+  # -------------------------------------------------------------------------
+  NatEipA:
+    Type: AWS::EC2::EIP
+    DependsOn: IGWAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-nat-eip-a"
+
+  NatEipB:
+    Type: AWS::EC2::EIP
+    DependsOn: IGWAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-nat-eip-b"
+
+  NatGatewayA:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatEipA.AllocationId
+      SubnetId: !Ref PublicSubnetA
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-natgw-a"
+
+  NatGatewayB:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatEipB.AllocationId
+      SubnetId: !Ref PublicSubnetB
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-natgw-b"
+
+  # -------------------------------------------------------------------------
+  # ROUTING
+  # A single public route table works for both public subnets: the route to
+  # the IGW is not AZ-specific. Each private subnet gets its OWN route table
+  # pointing to the NAT Gateway in its OWN AZ - this is what removes any
+  # cross-AZ NAT dependency.
+  # -------------------------------------------------------------------------
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-public-rt"
+
+  PublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: IGWAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetARouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetA
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnetBRouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetB
+      RouteTableId: !Ref PublicRouteTable
+
+  PrivateRouteTableA:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-private-rt-a"
+
+  PrivateDefaultRouteA:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableA
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGatewayA
+
+  PrivateSubnetARouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetA
+      RouteTableId: !Ref PrivateRouteTableA
+
+  PrivateRouteTableB:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-private-rt-b"
+
+  PrivateDefaultRouteB:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableB
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGatewayB
+
+  PrivateSubnetBRouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetB
+      RouteTableId: !Ref PrivateRouteTableB
+
+  # -------------------------------------------------------------------------
+  # SECURITY GROUPS (least privilege - no SSH anywhere)
+  # -------------------------------------------------------------------------
+  PublicWebSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Public web tier - HTTP from internet, ICMP from within the VPC only
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: HTTP from anywhere
+        - IpProtocol: icmp
+          FromPort: -1
+          ToPort: -1
+          CidrIp: !Ref VpcCidr
+          Description: Ping from within the VPC (validation only)
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+          Description: Allow all outbound
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-public-web-sg"
+
+  PrivateAppSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Private app tier - ICMP only, from the public web tier SG
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: icmp
+          FromPort: -1
+          ToPort: -1
+          SourceSecurityGroupId: !Ref PublicWebSG
+          Description: Ping from public web tier
+        - IpProtocol: icmp
+          FromPort: -1
+          ToPort: -1
+          CidrIp: !Ref VpcCidr
+          Description: Ping from within the VPC (validation only)
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+          Description: Allow all outbound (egress to NAT Gateway for updates/tests)
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-private-app-sg"
+
+  # -------------------------------------------------------------------------
+  # IAM ROLE FOR SSM (no SSH keys, no inbound management ports needed)
+  # -------------------------------------------------------------------------
+  SSMInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-ssm-instance-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-ssm-instance-role"
+
+  SSMInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub "${AWS::StackName}-ssm-instance-profile"
+      Roles:
+        - !Ref SSMInstanceRole
+
+  # -------------------------------------------------------------------------
+  # PUBLIC WEB TIER - 2 instances, one per AZ, Apache via User Data
+  # -------------------------------------------------------------------------
+  PublicWebServerA:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: !Ref InstanceType
+      SubnetId: !Ref PublicSubnetA
+      SecurityGroupIds:
+        - !Ref PublicWebSG
+      IamInstanceProfile: !Ref SSMInstanceProfile
+      # No KeyName - SSM Session Manager is the only access path
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          dnf update -y
+          dnf install -y httpd
+          systemctl enable httpd
+          systemctl start httpd
+          TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+          AZ=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/availability-zone)
+          cat > /var/www/html/index.html <<EOF
+          <html>
+            <head><title>${LabName}</title></head>
+            <body style="font-family: Arial, sans-serif; text-align:center; margin-top:80px;">
+              <h1>${FullName}</h1>
+              <h2>${LabName}</h2>
+              <p>Public Web Server A - Availability Zone: $AZ</p>
+            </body>
+          </html>
+          EOF
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-public-web-a"
+        - Key: Tier
+          Value: public-web
+
+  PublicWebServerB:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: !Ref InstanceType
+      SubnetId: !Ref PublicSubnetB
+      SecurityGroupIds:
+        - !Ref PublicWebSG
+      IamInstanceProfile: !Ref SSMInstanceProfile
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          dnf update -y
+          dnf install -y httpd
+          systemctl enable httpd
+          systemctl start httpd
+          TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+          AZ=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/availability-zone)
+          cat > /var/www/html/index.html <<EOF
+          <html>
+            <head><title>${LabName}</title></head>
+            <body style="font-family: Arial, sans-serif; text-align:center; margin-top:80px;">
+              <h1>${FullName}</h1>
+              <h2>${LabName}</h2>
+              <p>Public Web Server B - Availability Zone: $AZ</p>
+            </body>
+          </html>
+          EOF
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-public-web-b"
+        - Key: Tier
+          Value: public-web
+
+  # -------------------------------------------------------------------------
+  # PRIVATE APPLICATION TIER - 2 instances, one per AZ, no public IPs
+  # -------------------------------------------------------------------------
+  PrivateAppServerA:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: !Ref InstanceType
+      SubnetId: !Ref PrivateSubnetA
+      SecurityGroupIds:
+        - !Ref PrivateAppSG
+      IamInstanceProfile: !Ref SSMInstanceProfile
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          dnf update -y
+          dnf install -y traceroute
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-private-app-a"
+        - Key: Tier
+          Value: private-app
+
+  PrivateAppServerB:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: !Ref InstanceType
+      SubnetId: !Ref PrivateSubnetB
+      SecurityGroupIds:
+        - !Ref PrivateAppSG
+      IamInstanceProfile: !Ref SSMInstanceProfile
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          dnf update -y
+          dnf install -y traceroute
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-private-app-b"
+        - Key: Tier
+          Value: private-app
+
+# ---------------------------------------------------------------------------
+# OUTPUTS
+# ---------------------------------------------------------------------------
+Outputs:
+  VpcId:
+    Value: !Ref VPC
+
+  PublicWebServerAUrl:
+    Description: Browse to this URL to see Public Web Server A
+    Value: !Sub "http://${PublicWebServerA.PublicIp}"
+
+  PublicWebServerBUrl:
+    Description: Browse to this URL to see Public Web Server B
+    Value: !Sub "http://${PublicWebServerB.PublicIp}"
+
+  PublicWebServerAInstanceId:
+    Value: !Ref PublicWebServerA
+
+  PublicWebServerBInstanceId:
+    Value: !Ref PublicWebServerB
+
+  PrivateAppServerAInstanceId:
+    Value: !Ref PrivateAppServerA
+
+  PrivateAppServerBInstanceId:
+    Value: !Ref PrivateAppServerB
+
+  PrivateAppServerAPrivateIp:
+    Value: !GetAtt PrivateAppServerA.PrivateIp
+
+  PrivateAppServerBPrivateIp:
+    Value: !GetAtt PrivateAppServerB.PrivateIp
